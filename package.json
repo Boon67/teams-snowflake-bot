@@ -1,0 +1,71 @@
+{
+  "name": "teams-snowflake-bot",
+  "version": "1.0.0",
+  "description": "Microsoft Teams bot that integrates with Snowflake Cortex Agents to provide data insights",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js",
+    "test": "jest",
+    "test-snowflake": "node scripts/test-snowflake.js",
+    "test-agent-config": "node scripts/test-agent-configuration.js",
+    "test-timeout": "node scripts/test-timeout-config.js",
+    "test-sse": "node scripts/test-sse-parsing.js",
+    "test-dynamic-tools": "node scripts/test-dynamic-tools.js",
+    "test-debug-deltas": "node scripts/test-debug-deltas.js",
+    "test-realtime-deltas": "node scripts/test-realtime-deltas.js",
+    "test-progressive-updates": "node scripts/test-progressive-updates.js",
+    "test-progressive-debug": "node scripts/test-progressive-debug.js",
+    "generate-keypair": "node scripts/generate-keypair.js",
+    "setup-auth": "echo 'Choose an authentication method:' && echo '1. npm run generate-keypair  (for keypair auth)' && echo '2. Use PAT token (see sample.env for instructions)'",
+    "provision": "teamsfx provision",
+    "deploy": "teamsfx deploy",
+    "teams:local": "npx --yes @microsoft/teamsapp-cli preview --local",
+    "teams:provision": "npx --yes @microsoft/teamsapp-cli provision --env local",
+    "teams:deploy": "npx --yes @microsoft/teamsapp-cli deploy --env local",
+    "teams:test": "node scripts/start-teams-testing.js",
+    "teams:setup": "node scripts/start-teams-testing.js",
+    "teams:stop": "node scripts/stop-teams-testing.js",
+    "fix-npm": "node scripts/fix-npm-permissions.js",
+    "test-local": "node scripts/test-local-without-ngrok.js",
+    "console-test": "node scripts/console-test.js",
+    "test-web": "echo 'Open file://$PWD/test-interface/index.html in your browser'",
+    "test-api": "./test-examples/curl-examples.sh",
+    "create-playground": "node scripts/create-agents-playground.js",
+    "playground": "npm run create-playground && echo 'Open file://$PWD/agents-playground/index.html in your browser'",
+    "debug": "node --inspect index.js",
+    "debug-brk": "node --inspect-brk index.js",
+    "debug-teams": "DEBUG=teams:*,bot:*,snowflake:* node --inspect index.js",
+    "dev:m365": "echo 'M365 Agents Toolkit integration - see M365_AGENTS_TOOLKIT_INTEGRATION.md'",
+    "migrate:m365": "echo 'Migration guide available in M365_AGENTS_TOOLKIT_INTEGRATION.md'"
+  },
+  "keywords": [
+    "microsoft-teams",
+    "snowflake",
+    "cortex-agents",
+    "bot",
+    "chatbot"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.6.2",
+    "botbuilder": "^4.21.1",
+    "dotenv": "^16.3.1",
+    "joi": "^17.11.0",
+    "js-yaml": "^4.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "restify": "^11.1.0",
+    "snowflake-sdk": "^1.9.0",
+    "winston": "^3.11.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.4",
+    "jest": "^29.7.0",
+    "nodemon": "^3.0.2",
+    "@microsoft/teamsfx": "^2.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

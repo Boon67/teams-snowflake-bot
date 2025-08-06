@@ -1,0 +1,32 @@
+version: '3.8'
+
+services:
+  teams-snowflake-bot:
+    build: .
+    ports:
+      - "3978:3978"
+    environment:
+      - NODE_ENV=production
+      - MICROSOFT_APP_ID=${MICROSOFT_APP_ID}
+      - MICROSOFT_APP_PASSWORD=${MICROSOFT_APP_PASSWORD}
+      - BOT_PORT=3978
+      - SNOWFLAKE_ACCOUNT=${SNOWFLAKE_ACCOUNT}
+      - SNOWFLAKE_USERNAME=${SNOWFLAKE_USERNAME}
+      - SNOWFLAKE_PASSWORD=${SNOWFLAKE_PASSWORD}
+      - SNOWFLAKE_DATABASE=${SNOWFLAKE_DATABASE}
+      - SNOWFLAKE_SCHEMA=${SNOWFLAKE_SCHEMA}
+      - SNOWFLAKE_WAREHOUSE=${SNOWFLAKE_WAREHOUSE}
+      - SNOWFLAKE_ROLE=${SNOWFLAKE_ROLE}
+      - CORTEX_AGENTS_MODEL=${CORTEX_AGENTS_MODEL}
+      - CORTEX_AGENTS_AGENT_NAME=${CORTEX_AGENTS_AGENT_NAME}
+      - CORTEX_AGENTS_TIMEOUT=${CORTEX_AGENTS_TIMEOUT}
+      - LOG_LEVEL=${LOG_LEVEL}
+    volumes:
+      - ./logs:/app/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3978/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s

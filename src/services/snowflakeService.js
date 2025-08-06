@@ -1,17 +1,41 @@
 const snowflake = require('snowflake-sdk');
 const axios = require('axios');
 
+/**
+ * SnowflakeService - Core service for Snowflake database and Cortex Agents integration
+ * 
+ * This service manages all interactions with Snowflake, including:
+ * - Database connections with multiple authentication methods
+ * - Cortex Agents API integration with real-time streaming
+ * - Agent configuration management using DESCRIBE AGENT commands
+ * - SQL query execution with context switching
+ * - Real-time delta processing for progressive UI updates
+ * 
+ * Key Features:
+ * - Multiple authentication methods (password, keypair, PAT, JWT)
+ * - Real-time streaming with Server-Sent Events (SSE)
+ * - Dynamic agent configuration using Snowflake's native DESCRIBE AGENT
+ * - Automatic database context switching for queries
+ * - Comprehensive error handling and logging
+ */
 class SnowflakeService {
+    /**
+     * Constructor - Initialize service with configuration and debug settings
+     * 
+     * Sets up connection configuration, Cortex Agents settings, and debug output
+     * for real-time streaming delta processing.
+     */
     constructor() {
         this.connection = null;
         this.isConnected = false;
         this.connectionConfig = this.buildConnectionConfig();
         
+        // Cortex Agents configuration
         this.cortexConfig = {
             model: process.env.CORTEX_AGENTS_MODEL || 'llama3.3-70b'
         };
         
-        // Ensure stdout is not buffered for real-time debug output
+        // Configure real-time debug output for delta streaming
         if (process.env.DEBUG === 'true' || process.env.DEBUG_DELTAS === 'true') {
             // Force stdout to be line-buffered for immediate output
             if (process.stdout.setEncoding) {
@@ -20,6 +44,17 @@ class SnowflakeService {
         }
     }
 
+    /**
+     * Build Snowflake connection configuration with auto-detected authentication
+     * 
+     * Supports multiple authentication methods with automatic detection:
+     * 1. Keypair authentication (most secure for production)
+     * 2. Personal Access Token (PAT)
+     * 3. Password authentication (for development)
+     * 4. JWT authentication (for service integrations)
+     * 
+     * @returns {Object} - Snowflake connection configuration
+     */
     buildConnectionConfig() {
         const baseConfig = {
             account: process.env.SNOWFLAKE_ACCOUNT,
@@ -32,7 +67,7 @@ class SnowflakeService {
         
         // Determine authentication method based on available environment variables
         if (process.env.SNOWFLAKE_PRIVATE_KEY_PATH || process.env.SNOWFLAKE_PRIVATE_KEY) {
-            // Keypair authentication
+            // Keypair authentication (recommended for production)
             return this.buildKeypairConfig(baseConfig);
         } else if (process.env.SNOWFLAKE_ACCESS_TOKEN) {
             // Personal Access Token authentication
@@ -238,9 +273,26 @@ class SnowflakeService {
         process.stdout.write(`═══════════════════════════════════════════════════════════════════════\n\n`);
     }
 
+    /**
+     * Call Snowflake Cortex Agents API with real-time streaming support
+     * 
+     * This is the core method that interfaces with Snowflake's Cortex Agents API
+     * to process natural language queries and generate AI-powered responses.
+     * 
+     * Features:
+     * - Dynamic agent configuration from database (if CORTEX_AGENTS_AGENT_NAME is set)
+     * - Real-time streaming with Server-Sent Events (SSE)
+     * - Automatic SQL execution for data queries
+     * - Progressive delta updates for real-time UI
+     * - Comprehensive error handling and fallbacks
+     * 
+     * @param {string} query - User's natural language query
+     * @param {Function} onDelta - Optional callback for real-time streaming updates
+     * @returns {Object} - Formatted response with data, insights, and recommendations
+     */
     async callCortexAgentsAPI(query, onDelta = null) {
         try {
-            // Get access token for Cortex Agents API
+            // Authenticate with Snowflake to get access token
             const accessToken = await this.getSnowflakeAccessToken();
             
             if (!accessToken) {
@@ -248,31 +300,32 @@ class SnowflakeService {
                 return null;
             }
 
-            // Prepare the Cortex Agents API request
+            // Construct the Cortex Agents API endpoint
             const apiUrl = `https://${this.extractAccountIdentifier()}.snowflakecomputing.com/api/v2/cortex/agent:run`;
             
+            // Default request payload with optimized settings for streaming and reasoning
             const requestPayload = {
                 model: process.env.CORTEX_AGENTS_MODEL || "llama3.3-70b",
                 response_instruction: "You are a helpful insurance data analyst. Provide clear, concise answers about insurance data. When generating charts, make them visually appealing and easy to understand.",
-                experimental: {
-                    "chartToolRequired":true,
-                    "useLegacyAnswersToolNames":false,
-                    "snowflakeIntelligence":true,
-                    "enableChartAndTableContent":true,
-                    "enableAnalystStreaming":false,
-                    "searchResultConfidenceThreshold":{"enabled":true,"threshold":1.5},
-                    "enableSSEAsString":true,
-                    "reasoningAgentToolConfig":{"orchestrationType":"reasoning"},
-                    "enableStepTrace":true,
-                    "enableSqlExplanation":false,
-                    "enableCortexLiteAgentIntegrateWithThread":true,
-                    "sqlGenMode":"STANDARD",
-                    "enableAnalystToolResultInTopLevelFields":true,
-                    "reasoningAgentFlowType":"simple",
-                    "responseSchemaVersion":"v1"
-                },
+                                 experimental: {
+                     "chartToolRequired":true,                           // Enable chart generation
+                     "useLegacyAnswersToolNames":false,                 // Use modern tool names
+                     "snowflakeIntelligence":true,                      // Enable Snowflake Intelligence features
+                     "enableChartAndTableContent":true,                 // Include chart/table data in responses
+                     "enableAnalystStreaming":false,                    // Use custom streaming implementation
+                     "searchResultConfidenceThreshold":{"enabled":true,"threshold":1.5},
+                     "enableSSEAsString":true,                          // Enable Server-Sent Events as strings
+                     "reasoningAgentToolConfig":{"orchestrationType":"reasoning"}, // Enable AI reasoning display
+                     "enableStepTrace":true,                            // Include step-by-step processing
+                     "enableSqlExplanation":false,                      // Execute SQL, don't show it
+                     "enableCortexLiteAgentIntegrateWithThread":true,
+                     "sqlGenMode":"STANDARD",                           // Standard SQL generation mode
+                     "enableAnalystToolResultInTopLevelFields":false,   // Don't show raw tool results
+                     "reasoningAgentFlowType":"simple",                 // Simplified reasoning flow
+                     "responseSchemaVersion":"v1"                       // Use latest response schema
+                 },
                 tool_choice: {
-                    type: "auto"
+                    type: "auto"  // Let AI choose appropriate tools automatically
                 },
                 messages: [
                     {
@@ -287,60 +340,94 @@ class SnowflakeService {
                 ]
             };
 
-            // Check if agent name is provided
-            if (!process.env.CORTEX_AGENTS_AGENT_NAME) {
-                console.log('❌ No agent name configured in CORTEX_AGENTS_AGENT_NAME');
-                return {
-                    summary: "Agent not configured. Please set CORTEX_AGENTS_AGENT_NAME in your environment variables.",
-                    data: [],
-                    insights: "Contact your administrator to configure a Cortex Agent for this bot.",
-                    source: "configuration_error"
-                };
-            }
-
-            // Get specific tool configuration for the agent
-            try {
-                const agentConfig = await this.getAgentConfiguration(process.env.CORTEX_AGENTS_AGENT_NAME);
-                if (agentConfig) {
-                    // Use agent-specific configuration
-                    if (agentConfig.tools && agentConfig.tools.length > 0) {
-                        requestPayload.tools = agentConfig.tools;
-                        console.log(`✅ Using ${agentConfig.tools.length} tools from agent configuration`);
-                    }
-                    if (agentConfig.response_instruction) {
-                        requestPayload.response_instruction = agentConfig.response_instruction;
-                        console.log(`✅ Using custom response instruction from agent configuration`);
-                    }
-                    if (agentConfig.tool_resources) {
-                        requestPayload.tool_resources = agentConfig.tool_resources;
-                        console.log(`✅ Using tool resources from agent configuration`);
+            // Configure tools and agent specification
+            if (process.env.CORTEX_AGENTS_AGENT_NAME) {
+                // Option 1: Use predefined agent configuration
+                console.log(`🤖 Using predefined agent: ${process.env.CORTEX_AGENTS_AGENT_NAME}`);
+                try {
+                    const agentConfig = await this.getAgentConfiguration(process.env.CORTEX_AGENTS_AGENT_NAME);
+                    if (agentConfig) {
+                        if (agentConfig.agent_spec) {
+                            // Use the complete agent_spec as the base for the request payload
+                            console.log(`🎯 Using agent_spec for request payload from: ${process.env.CORTEX_AGENTS_AGENT_NAME}`);
+                            
+                            // Merge agent_spec with base request payload, preserving the user message and experimental settings
+                            const userMessages = requestPayload.messages;
+                            const experimentalSettings = requestPayload.experimental;
+                            
+                            // Start with agent_spec as the base
+                            Object.assign(requestPayload, agentConfig.agent_spec);
+                            
+                            // Preserve user messages (agent_spec shouldn't override the current query)
+                            requestPayload.messages = userMessages;
+                            
+                            // Preserve experimental settings for streaming and reasoning
+                            requestPayload.experimental = {
+                                ...agentConfig.agent_spec.experimental,
+                                ...experimentalSettings  // Our experimental settings take precedence
+                            };
+                            
+                            if (process.env.DEBUG === 'true' || process.env.DEBUG_DELTAS === 'true') {
+                                console.log('🎯 USING AGENT_SPEC FOR REQUEST:');
+                                console.log('   Agent Spec Keys:', Object.keys(agentConfig.agent_spec));
+                                if (agentConfig.agent_spec.tools) {
+                                    console.log(`   Tools from agent_spec: ${Array.isArray(agentConfig.agent_spec.tools) ? agentConfig.agent_spec.tools.length : 'unknown'}`);
+                                }
+                                if (agentConfig.agent_spec.response_instruction) {
+                                    console.log(`   Response instruction from agent_spec: present`);
+                                }
+                                console.log('─────────────────────────────────────────────────────────────────────');
+                            }
+                        } else {
+                            // Fallback to individual configuration fields if agent_spec is not available
+                            console.log(`⚠️  No agent_spec found, using individual configuration fields`);
+                            if (agentConfig.tools && agentConfig.tools.length > 0) {
+                                requestPayload.tools = agentConfig.tools;
+                                console.log(`✅ Using ${agentConfig.tools.length} tools from agent configuration`);
+                            }
+                            if (agentConfig.response_instruction) {
+                                requestPayload.response_instruction = agentConfig.response_instruction;
+                                console.log(`✅ Using custom response instruction from agent configuration`);
+                            }
+                            if (agentConfig.tool_resources) {
+                            requestPayload.tool_resources = agentConfig.tool_resources;
+                            console.log(`✅ Using tool resources from agent configuration`);
+                        }
                     }
                     console.log(`✅ Using agent configuration for: ${process.env.CORTEX_AGENTS_AGENT_NAME}`);
                 } else {
                     // Return error if configuration not found
                     console.error(`❌ No configuration found for agent: ${process.env.CORTEX_AGENTS_AGENT_NAME}`);
                     return {
-                        summary: `Agent configuration not found for '${process.env.CORTEX_AGENTS_AGENT_NAME}'. Please check the agent configuration in the database.`,
+                        summary: `Agent configuration not found for '${process.env.CORTEX_AGENTS_AGENT_NAME}'. Please check that the agent exists and is accessible.`,
                         data: [],
-                        insights: "Contact your administrator to verify the agent configuration exists in SNOWFLAKE_INTELLIGENCE.AGENTS.CONFIG.",
+                        insights: "Contact your administrator to verify the agent exists and you have permissions to access it.",
                         source: "configuration_error"
                     };
                 }
-            } catch (error) {
-                console.error('❌ Failed to get agent configuration:', error.message);
-                // Return error instead of fallback
+                } catch (error) {
+                    console.error('❌ Failed to get agent configuration:', error.message);
+                    // Return error instead of fallback
+                    return {
+                        summary: `Failed to read agent configuration for '${process.env.CORTEX_AGENTS_AGENT_NAME}': ${error.message}`,
+                        data: [],
+                        insights: "Check database permissions and table structure. Contact your administrator for assistance.",
+                        source: "configuration_error"
+                    };
+                }
+            } else {
+                // No agent name configured - return error
+                console.error('❌ No agent name configured in CORTEX_AGENTS_AGENT_NAME');
                 return {
-                    summary: `Failed to read agent configuration for '${process.env.CORTEX_AGENTS_AGENT_NAME}': ${error.message}`,
+                    summary: "Agent configuration error: No Cortex Agent is configured for this bot.",
                     data: [],
-                    insights: "Check database permissions and table structure. Contact your administrator for assistance.",
+                    insights: "Please set CORTEX_AGENTS_AGENT_NAME in your environment variables to specify which Cortex Agent to use. Contact your administrator for available agent names.",
                     source: "configuration_error"
                 };
             }
 
             console.log(`Making Cortex Agents API request to: ${apiUrl}`);
-            if (process.env.VERBOSE_DELTA_LOGGING === 'true') {
-                console.log('📋 Request Payload:', JSON.stringify(requestPayload, null, 2));
-            }
+            console.log('📋 Request Payload:', JSON.stringify(requestPayload, null, 2));
 
             const timeoutSeconds = parseInt(process.env.CORTEX_AGENTS_TIMEOUT) || 60;
             
@@ -550,72 +637,183 @@ class SnowflakeService {
         ];
     }
 
+    /**
+     * Get agent configuration using DESCRIBE AGENT command
+     * 
+     * Uses Snowflake's built-in DESCRIBE AGENT command to retrieve agent configuration
+     * instead of querying a custom configuration table. This approach leverages
+     * Snowflake's native agent management capabilities.
+     * 
+     * @param {string} agentName - Name of the agent to describe
+     * @returns {Object} - Agent configuration with tools, response_instruction, and tool_resources
+     */
     async getAgentConfiguration(agentName) {
         try {
-            console.log(`🔍 Querying agent configuration for: ${agentName}`);
+            console.log(`🔍 Describing agent configuration for: ${agentName}`);
             
             // Connect to database if not already connected
             await this.connect();
             
+            // Use DESCRIBE AGENT command to get agent configuration
+            const describeQuery = `DESCRIBE AGENT snowflake_intelligence.agents."${agentName}"`;
+            
+            if (process.env.DEBUG === 'true' || process.env.DEBUG_DELTAS === 'true') {
+                console.log('📝 Executing DESCRIBE AGENT query:');
+                console.log(describeQuery);
+                console.log('─────────────────────────────────────────────────────────────────────');
+            }
+            
             return new Promise((resolve, reject) => {
-                // First, switch to SNOWFLAKE_INTELLIGENCE database
                 this.connection.execute({
-                    sqlText: `USE DATABASE SNOWFLAKE_INTELLIGENCE`,
-                    complete: (err, stmt, useDbRows) => {
+                    sqlText: describeQuery,
+                    complete: (err, stmt, rows) => {
                         if (err) {
-                            console.error(`❌ Cannot switch to SNOWFLAKE_INTELLIGENCE database:`, err.message);
-                            reject(new Error(`Cannot access SNOWFLAKE_INTELLIGENCE database: ${err.message}`));
+                            console.error(`❌ Failed to describe agent ${agentName}:`, err.message);
+                            reject(new Error(`Agent '${agentName}' not found or not accessible: ${err.message}`));
                             return;
                         }
                         
-                        console.log(`✅ Switched to SNOWFLAKE_INTELLIGENCE database`);
+                        if (!rows || rows.length === 0) {
+                            console.warn(`⚠️  No configuration found for agent: ${agentName}`);
+                            resolve(null);
+                            return;
+                        }
                         
-                        // Now query the agent configuration
-                        this.connection.execute({
-                            sqlText: `SELECT AGENT_NAME, TOOLS, RESPONSE_INSTRUCTION, TOOL_RESOURCES FROM AGENTS.CONFIG WHERE AGENT_NAME = ?`,
-                            binds: [agentName],
-                            complete: (err, stmt, rows) => {
-                                if (err) {
-                                    console.error(`❌ Failed to query agent configuration for ${agentName}:`, err.message);
-                                    reject(err);
-                                } else if (rows.length === 0) {
-                                    console.warn(`⚠️  No configuration found for agent: ${agentName}`);
-                                    resolve(null);
-                                } else {
-                            console.log(`✅ Found configuration for agent: ${agentName}`);
-                            
-                            const row = rows[0];
-                            const config = {};
-                            
-                            // Handle TOOLS column (already an array)
-                            if (row.TOOLS) {
-                                config.tools = row.TOOLS;
-                                console.log(`📋 Loaded ${Array.isArray(config.tools) ? config.tools.length : 'unknown'} tools from configuration`);
+                        console.log(`✅ Found configuration for agent: ${agentName}`);
+                        
+                        // Debug logging for DESCRIBE AGENT results
+                        if (process.env.DEBUG === 'true' || process.env.DEBUG_DELTAS === 'true') {
+                            console.log('📊 DESCRIBE AGENT Results:');
+                            console.log(`   Rows returned: ${rows.length}`);
+                            if (rows.length > 0) {
+                                console.log(`   Columns: ${Object.keys(rows[0]).join(', ')}`);
+                                console.log('   Sample row:', JSON.stringify(rows[0], null, 2));
                             }
-                            
-                            // Use RESPONSE_INSTRUCTION column for response_instruction
-                            if (row.RESPONSE_INSTRUCTION) {
-                                config.response_instruction = row.RESPONSE_INSTRUCTION;
-                                console.log(`📝 Loaded response instruction from configuration`);
-                            }
-                            
-                            // Handle TOOL_RESOURCES column (already an object)
-                            if (row.TOOL_RESOURCES) {
-                                config.tool_resources = row.TOOL_RESOURCES;
-                                console.log(`🔧 Loaded tool resources from configuration`);
-                            }
-                            
-                            resolve(config);
-                                }
-                            }
-                        });
+                            console.log('─────────────────────────────────────────────────────────────────────');
+                        }
+                        
+                        // Parse the DESCRIBE AGENT output
+                        const config = this.parseAgentDescription(rows);
+                        
+                        resolve(config);
                     }
                 });
             });
         } catch (error) {
-            console.error(`❌ Error querying agent configuration for ${agentName}:`, error);
+            console.error(`❌ Error describing agent ${agentName}:`, error);
             throw error;
         }
+    }
+    
+    /**
+     * Parse DESCRIBE AGENT output into configuration object
+     * 
+     * Processes the result rows from DESCRIBE AGENT command and extracts
+     * the agent_spec and other relevant configuration fields.
+     * 
+     * @param {Array} rows - Result rows from DESCRIBE AGENT command
+     * @returns {Object} - Parsed configuration object with agent_spec
+     */
+    parseAgentDescription(rows) {
+        const config = {};
+        
+        if (process.env.DEBUG === 'true' || process.env.DEBUG_DELTAS === 'true') {
+            console.log('🔍 PARSING AGENT DESCRIPTION:');
+        }
+        
+        // DESCRIBE AGENT returns a single row with columns: name, database_name, schema_name, owner, comment, profile, agent_spec, created_on
+        // The agent_spec column contains the complete JSON configuration
+        if (rows && rows.length > 0) {
+            const row = rows[0]; // Take the first (and typically only) row
+            
+            if (process.env.DEBUG === 'true' || process.env.DEBUG_DELTAS === 'true') {
+                console.log(`   Processing agent row with columns: ${Object.keys(row).join(', ')}`);
+            }
+            
+            // Extract agent_spec from the direct column
+            const agentSpecValue = row.agent_spec || row.AGENT_SPEC;
+            
+            if (agentSpecValue) {
+                try {
+                    // Parse the agent_spec which contains the complete agent configuration
+                    config.agent_spec = typeof agentSpecValue === 'string' ? JSON.parse(agentSpecValue) : agentSpecValue;
+                    console.log(`🎯 Loaded agent_spec from DESCRIBE AGENT`);
+                    
+                    // Extract individual components from agent_spec for backward compatibility
+                    if (config.agent_spec.tools) {
+                        config.tools = config.agent_spec.tools;
+                        console.log(`📋 Extracted ${Array.isArray(config.tools) ? config.tools.length : 'unknown'} tools from agent_spec`);
+                    }
+                    if (config.agent_spec.instructions && config.agent_spec.instructions.response) {
+                        config.response_instruction = config.agent_spec.instructions.response;
+                        console.log(`📝 Extracted response instruction from agent_spec.instructions.response`);
+                    }
+                    if (config.agent_spec.tool_resources) {
+                        config.tool_resources = config.agent_spec.tool_resources;
+                        console.log(`🔧 Extracted tool resources from agent_spec`);
+                    }
+                    
+                    if (process.env.DEBUG === 'true' || process.env.DEBUG_DELTAS === 'true') {
+                        console.log('🎯 Agent Spec Structure:');
+                        if (config.agent_spec.models) {
+                            console.log(`   Models: ${JSON.stringify(config.agent_spec.models)}`);
+                        }
+                        if (config.agent_spec.instructions) {
+                            console.log(`   Instructions: Present (response + ${config.agent_spec.instructions.sample_questions?.length || 0} sample questions)`);
+                        }
+                        if (config.agent_spec.tools) {
+                            console.log(`   Tools: ${config.agent_spec.tools.length} tools`);
+                            config.agent_spec.tools.forEach((tool, i) => {
+                                console.log(`     ${i + 1}. ${tool.tool_spec?.type} (${tool.tool_spec?.name})`);
+                            });
+                        }
+                        if (config.agent_spec.tool_resources) {
+                            console.log(`   Tool Resources: ${Object.keys(config.agent_spec.tool_resources).join(', ')}`);
+                        }
+                    }
+                    
+                } catch (parseError) {
+                    console.warn(`⚠️  Failed to parse agent_spec from DESCRIBE AGENT: ${parseError.message}`);
+                    if (process.env.DEBUG === 'true') {
+                        console.log('Raw agent_spec value:', agentSpecValue);
+                    }
+                }
+            } else {
+                console.warn(`⚠️  No agent_spec column found in DESCRIBE AGENT result`);
+                if (process.env.DEBUG === 'true' || process.env.DEBUG_DELTAS === 'true') {
+                    console.log('Available columns:', Object.keys(row));
+                }
+            }
+            
+            // Also extract other useful metadata
+            config.agent_name = row.name || row.NAME;
+            config.database_name = row.database_name || row.DATABASE_NAME;
+            config.schema_name = row.schema_name || row.SCHEMA_NAME;
+            config.owner = row.owner || row.OWNER;
+            config.comment = row.comment || row.COMMENT;
+            
+            if (process.env.DEBUG === 'true' || process.env.DEBUG_DELTAS === 'true') {
+                console.log(`   Agent metadata: ${config.agent_name} (${config.database_name}.${config.schema_name})`);
+                console.log(`   Owner: ${config.owner}, Comment: ${config.comment}`);
+            }
+            
+        } else {
+            console.warn(`⚠️  No rows returned from DESCRIBE AGENT`);
+        }
+        
+        if (process.env.DEBUG === 'true' || process.env.DEBUG_DELTAS === 'true') {
+            console.log('📋 FINAL PARSED CONFIG:');
+            console.log(`   Agent Spec: ${config.agent_spec ? 'Present' : 'Not found'}`);
+            console.log(`   Tools: ${config.tools ? 'Present' : 'Not found'}`);
+            console.log(`   Response Instruction: ${config.response_instruction ? 'Present' : 'Not found'}`);
+            console.log(`   Tool Resources: ${config.tool_resources ? 'Present' : 'Not found'}`);
+            if (config.agent_spec && process.env.DEBUG === 'true') {
+                console.log('🎯 Agent Spec Content:', JSON.stringify(config.agent_spec, null, 2));
+            }
+            console.log('─────────────────────────────────────────────────────────────────────');
+        }
+        
+        return config;
     }
 
     async processStreamingResponse(stream, onDelta = null) {
@@ -1023,8 +1221,26 @@ class SnowflakeService {
         }
     }
 
+    /**
+     * Format Cortex Agents response with debug logging for SQL detection
+     * 
+     * Processes delta responses from Cortex Agents API and extracts structured data.
+     * Includes comprehensive debug logging for SQL query detection and response formatting.
+     * 
+     * @param {Object} delta - Delta response from Cortex Agents API
+     * @returns {Object} - Formatted response with summary, data, insights, etc.
+     */
     async formatCortexAgentsResponse(delta) {
         try {
+            // Debug logging for response formatting
+            if (process.env.DEBUG === 'true' || process.env.DEBUG_DELTAS === 'true') {
+                console.log('\n┌─────────────────────────────────────────────────────────────────────┐');
+                console.log('│ 🔄 FORMATTING CORTEX AGENTS RESPONSE                                │');
+                console.log('└─────────────────────────────────────────────────────────────────────┘');
+                console.log('📦 Delta content type:', delta.content?.[0]?.type || 'unknown');
+                console.log('📊 Processing response structure...');
+                console.log('─────────────────────────────────────────────────────────────────────');
+            }
             let summary = "";
             let data = [];
             let insights = "Response generated by Snowflake Cortex Agents";
@@ -1052,6 +1268,16 @@ class SnowflakeService {
                                         if (result.json.sql) {
                                             sql = result.json.sql;
                                             insights = result.json.text || insights;
+                                            
+                                            // Debug logging for SQL extraction
+                                            if (process.env.DEBUG === 'true' || process.env.DEBUG_DELTAS === 'true') {
+                                                console.log('✅ SQL QUERY EXTRACTED FROM CORTEX AGENTS:');
+                                                console.log('📝 SQL Query:');
+                                                console.log(sql);
+                                                console.log('💬 Associated Text:');
+                                                console.log(result.json.text || 'No text provided');
+                                                console.log('─────────────────────────────────────────────────────────────────────');
+                                            }
                                         }
                                         
                                         // Handle query results
@@ -1119,6 +1345,26 @@ class SnowflakeService {
                 summary = `Found ${data.length} result${data.length !== 1 ? 's' : ''} for your query.`;
             } else if (!summary) {
                 summary = "Query processed successfully.";
+            }
+            
+            // Debug logging for final response structure
+            if (process.env.DEBUG === 'true' || process.env.DEBUG_DELTAS === 'true') {
+                console.log('📋 FINAL FORMATTED RESPONSE:');
+                console.log(`   Summary: ${summary ? 'Present' : 'Not present'} (${summary.length} chars)`);
+                console.log(`   Data: ${data.length} rows`);
+                console.log(`   SQL: ${sql ? 'Present' : 'Not present'}`);
+                console.log(`   Charts: ${charts.length} chart(s)`);
+                console.log(`   Insights: ${insights ? 'Present' : 'Not present'}`);
+                
+                if (sql) {
+                    console.log('📝 Final SQL Query:');
+                    console.log(sql);
+                }
+                
+                if (data.length > 0) {
+                    console.log(`📊 Data Sample (first row):`, JSON.stringify(data[0], null, 2));
+                }
+                console.log('═══════════════════════════════════════════════════════════════════════\n');
             }
             
             return {
@@ -1244,14 +1490,84 @@ class SnowflakeService {
 
 
 
+    /**
+     * Execute SQL query with comprehensive debug logging
+     * 
+     * Executes SQL queries against Snowflake with detailed logging for debugging.
+     * Logs the query, execution time, row counts, and sample results when debug mode is enabled.
+     * 
+     * @param {string} sqlQuery - The SQL query to execute
+     * @returns {Promise<Array>} - Query results
+     */
     async executeQuery(sqlQuery) {
+        const startTime = Date.now();
+        
+        // Debug logging for SQL queries
+        if (process.env.DEBUG === 'true' || process.env.DEBUG_DELTAS === 'true') {
+            console.log('\n═══════════════════════════════════════════════════════════════════════');
+            console.log('🔍 EXECUTING SQL QUERY');
+            console.log('═══════════════════════════════════════════════════════════════════════');
+            console.log('📝 Query:');
+            console.log(sqlQuery);
+            console.log('─────────────────────────────────────────────────────────────────────');
+        }
+        
         return new Promise((resolve, reject) => {
             this.connection.execute({
                 sqlText: sqlQuery,
                 complete: (err, stmt, rows) => {
+                    const executionTime = Date.now() - startTime;
+                    
                     if (err) {
+                        // Debug logging for SQL errors
+                        if (process.env.DEBUG === 'true' || process.env.DEBUG_DELTAS === 'true') {
+                            console.log('❌ SQL EXECUTION ERROR:');
+                            console.log(`   Error Code: ${err.code}`);
+                            console.log(`   Error Message: ${err.message}`);
+                            console.log(`   Execution Time: ${executionTime}ms`);
+                            console.log('═══════════════════════════════════════════════════════════════════════\n');
+                        }
                         reject(err);
                     } else {
+                        // Debug logging for successful SQL execution
+                        if (process.env.DEBUG === 'true' || process.env.DEBUG_DELTAS === 'true') {
+                            console.log('✅ SQL EXECUTION SUCCESSFUL:');
+                            console.log(`   Rows Returned: ${rows?.length || 0}`);
+                            console.log(`   Execution Time: ${executionTime}ms`);
+                            
+                            // Log sample results (first few rows with limited fields)
+                            if (rows && rows.length > 0) {
+                                console.log('📊 Sample Results (first 3 rows):');
+                                const sampleRows = rows.slice(0, 3);
+                                const columns = Object.keys(sampleRows[0]);
+                                
+                                // Limit columns for readability
+                                const displayColumns = columns.slice(0, 5);
+                                if (columns.length > 5) {
+                                    displayColumns.push(`... (+${columns.length - 5} more columns)`);
+                                }
+                                
+                                console.log(`   Columns: ${displayColumns.join(', ')}`);
+                                
+                                sampleRows.forEach((row, index) => {
+                                    console.log(`   Row ${index + 1}:`);
+                                    displayColumns.slice(0, 5).forEach(col => {
+                                        const value = row[col];
+                                        const displayValue = typeof value === 'string' && value.length > 50 
+                                            ? value.substring(0, 50) + '...' 
+                                            : value;
+                                        console.log(`     ${col}: ${displayValue}`);
+                                    });
+                                });
+                                
+                                if (rows.length > 3) {
+                                    console.log(`   ... (+${rows.length - 3} more rows)`);
+                                }
+                            } else {
+                                console.log('📊 No rows returned');
+                            }
+                            console.log('═══════════════════════════════════════════════════════════════════════\n');
+                        }
                         resolve(rows);
                     }
                 }

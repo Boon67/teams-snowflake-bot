@@ -114,20 +114,26 @@ A sophisticated Microsoft Teams bot that integrates with Snowflake Cortex Agents
 
 1. **Ensure Cortex Agents Access**: Verify you have access to Snowflake Cortex Agents
 2. **Create Bot User**: Create a dedicated user/role for the bot with appropriate permissions
-3. **Configure Agent Database**: Set up the `SNOWFLAKE_INTELLIGENCE.AGENTS.CONFIG` table if using specific agent configurations
-4. **Grant Permissions**: Ensure the bot user can access your data tables and execute queries
+3. **Configure Agent**: Create or configure your Cortex Agent using Snowflake's native agent management
+4. **Grant Permissions**: Ensure the bot user can access your data tables, execute queries, and describe agents
 5. **Test Connection**: Verify connectivity using the Snowflake web interface
 
-#### Agent Configuration Table (Optional)
-If using `CORTEX_AGENTS_AGENT_NAME`, create the configuration table:
+#### Agent Configuration (Optional)
+If using `CORTEX_AGENTS_AGENT_NAME`, ensure the agent exists in Snowflake:
 ```sql
-CREATE TABLE SNOWFLAKE_INTELLIGENCE.AGENTS.CONFIG (
-    AGENT_NAME STRING,
-    TOOLS VARIANT,
-    RESPONSE_INSTRUCTION STRING,
-    TOOL_RESOURCES VARIANT
-);
+-- Create agent using Snowflake's native agent management
+CREATE AGENT snowflake_intelligence.agents."Insurance Company Analyst"
+AS 'Your agent description here'
+WITH 
+    tools = ['DataAnalyst', 'chart_generator'],
+    response_instruction = 'You are a helpful insurance data analyst...',
+    tool_resources = {'semantic_model': 'insurance_model'};
+
+-- Verify agent exists
+DESCRIBE AGENT snowflake_intelligence.agents."Insurance Company Analyst";
 ```
+
+The bot will use the `DESCRIBE AGENT` command to retrieve the agent's configuration directly from Snowflake's native agent management system. When available, the bot will use the complete `agent_spec` from the DESCRIBE AGENT output as the request payload for Cortex Agents API calls, ensuring perfect consistency with the agent's defined configuration.
 
 ### 4. Teams App Manifest
 
@@ -170,12 +176,47 @@ docker run -p 3978:3978 --env-file .env teams-snowflake-bot
 ```env
 # Development-specific settings
 INCLUDE_AGENT_THINKING=true     # Show AI reasoning
-DEBUG_DELTAS=true              # Debug streaming
-VERBOSE_DELTA_LOGGING=true     # Detailed logs
+DEBUG_DELTAS=true              # Debug streaming deltas
+VERBOSE_DELTA_LOGGING=true     # Detailed request/response logs
+DEBUG=true                     # Enable comprehensive debug logging including SQL queries and results
+```
+
+#### Debug Logging Features
+When `DEBUG=true` or `DEBUG_DELTAS=true` is set, the bot provides comprehensive debug output including:
+
+- **Agent Configuration**: Shows DESCRIBE AGENT command execution, agent_spec parsing, and request payload construction
+- **SQL Query Detection**: Shows when SQL queries are extracted from Cortex Agents responses
+- **SQL Execution**: Displays the actual SQL being executed with execution time and row counts
+- **Query Results**: Sample data from SQL query results (first 3 rows, first 5 columns)
+- **Response Parsing**: Detailed breakdown of how Cortex Agents responses are parsed
+- **Delta Processing**: Real-time streaming debug information
+- **Error Details**: Comprehensive error logging with context
+
+**Example Debug Output:**
+```
+═══════════════════════════════════════════════════════════════════════
+🔍 EXECUTING SQL QUERY
+═══════════════════════════════════════════════════════════════════════
+📝 Query:
+SELECT COUNT(*) as total_policies, AVG(premium) as avg_premium 
+FROM insurance_policies 
+WHERE policy_date >= '2023-01-01'
+─────────────────────────────────────────────────────────────────────
+✅ SQL EXECUTION SUCCESSFUL:
+   Rows Returned: 1
+   Execution Time: 245ms
+📊 Sample Results (first 3 rows):
+   Columns: TOTAL_POLICIES, AVG_PREMIUM
+   Row 1:
+     TOTAL_POLICIES: 15847
+     AVG_PREMIUM: 1250.75
+═══════════════════════════════════════════════════════════════════════
 ```
 
 #### Available Test Commands
-- `test bot` - Simple connectivity test
+- `test bot` - Simple connectivity test in chat
+- `npm run test-describe-agent` - Test DESCRIBE AGENT functionality and configuration
+- `npm run test-snowflake` - Test basic Snowflake connectivity
 - Any natural language query to test Cortex Agents integration
 
 ## 💬 Usage Examples
@@ -281,8 +322,9 @@ The bot includes several monitoring features:
    - SQL results not appearing: Verify database switching permissions for automatic query execution
 
 5. **Agent configuration issues**
-   - Agent not found: Ensure `CORTEX_AGENTS_AGENT_NAME` matches database entry
-   - Tools not loading: Check `SNOWFLAKE_INTELLIGENCE.AGENTS.CONFIG` table structure and permissions
+   - Agent not found: Ensure `CORTEX_AGENTS_AGENT_NAME` matches the exact agent name in Snowflake
+   - Agent not accessible: Verify permissions to execute `DESCRIBE AGENT` command
+   - Tools not loading: Check agent configuration using `DESCRIBE AGENT` and verify agent setup
 
 ### Logs
 

@@ -63,32 +63,54 @@ class TeamsSnowflakeBot extends ActivityHandler {
             }
             
             try {
-                // Show typing indicator
+                // Show typing indicator to provide immediate user feedback
                 await this.sendTypingIndicator(context);
                 
-                // Send immediate acknowledgment only for non-emulator environments
+                // Send immediate acknowledgment to confirm message received
                 const acknowledgment = this.getAcknowledgmentMessage();
                 await context.sendActivity(MessageFactory.text(acknowledgment));
-                // Small delay to prevent message collision
+                // Small delay to prevent message collision in Teams
                 await this.delay(500);
                 
                 // Process the question through Snowflake Cortex Agents with streaming
                 console.log('🔄 Processing Snowflake query with streaming...');
                 
-                // State for streaming Adaptive Cards with queuing
+                /**
+                 * State management for streaming Adaptive Cards
+                 * 
+                 * This section manages the real-time streaming of AI agent responses
+                 * with progressive Adaptive Cards that update every second. The system
+                 * handles both "thinking" (agent reasoning) and "analysis" (main response) content.
+                 */
+                
+                // Activity references for card updates (production channels only)
                 let thinkingCardActivity = null;
                 let analysisCardActivity = null;
-                let accumulatedThinking = '';
-                let accumulatedAnalysis = '';
+                
+                // Accumulated content from streaming deltas
+                let accumulatedThinking = '';    // AI agent reasoning content
+                let accumulatedAnalysis = '';    // Main response analysis content
+                
+                // Flags to track card creation state
                 let thinkingCardCreated = false;
                 let analysisCardCreated = false;
+                
+                // Timer management for queued updates (prevents excessive API calls)
                 let thinkingUpdateTimer = null;
                 let analysisUpdateTimer = null;
                 const CARD_UPDATE_INTERVAL = 1000; // Update cards every 1 second
                 
-                // Helper functions for queued card updates (hybrid approach for emulator compatibility)
+                /**
+                 * Helper function to schedule thinking card updates
+                 * 
+                 * Implements a hybrid approach for Bot Framework Emulator compatibility:
+                 * - Production channels: Uses updateActivity() for proper in-place updates
+                 * - Emulator: Sends new cards as fallback due to rendering limitations
+                 * 
+                 * This prevents excessive API calls by batching updates every 1 second.
+                 */
                 const scheduleThinkingUpdate = () => {
-                    if (thinkingUpdateTimer) return; // Already scheduled
+                    if (thinkingUpdateTimer) return; // Prevent multiple timers
                     
                     thinkingUpdateTimer = setTimeout(async () => {
                         try {
@@ -378,22 +400,34 @@ class TeamsSnowflakeBot extends ActivityHandler {
 
 
 
+    /**
+     * Process Snowflake query with real-time streaming support
+     * 
+     * This method handles the core interaction with Snowflake Cortex Agents,
+     * providing real-time streaming of AI agent responses through delta callbacks.
+     * 
+     * @param {string} query - User's natural language query
+     * @param {Object} context - Bot Framework context for the conversation
+     * @param {Function} onDelta - Optional callback for real-time streaming updates
+     * @returns {string|Object} - Formatted response for display
+     */
     async processSnowflakeQueryWithStreaming(query, context, onDelta = null) {
         try {
-            // Validate and sanitize the query
+            // Validate and sanitize the user input to prevent injection attacks
             const sanitizedQuery = this.sanitizeQuery(query);
             
             if (!sanitizedQuery || sanitizedQuery.length === 0) {
                 return "I need a question to help you. Please ask me about your data.";
             }
             
-            // Create a delta callback that passes deltas directly to onDelta
+            // Create a delta callback wrapper for streaming updates
+            // This enables real-time progressive card updates
             let deltaCallback = null;
             if (onDelta && typeof onDelta === 'function') {
                 deltaCallback = (delta) => {
                     try {
                         // Pass delta directly to onDelta for progressive message updates
-                        // The onDelta callback will handle its own formatting
+                        // The onDelta callback handles Adaptive Card creation and updates
                         onDelta(delta);
                     } catch (err) {
                         this.logger.warn('Error in delta callback:', err.message);
@@ -401,13 +435,14 @@ class TeamsSnowflakeBot extends ActivityHandler {
                 };
             }
             
-            // Process everything through Snowflake Cortex Agents with streaming
+            // Process through Snowflake Cortex Agents with streaming support
+            // This call returns both final results and triggers real-time deltas
             const result = await this.snowflakeService.queryWithCortexAgents(sanitizedQuery, deltaCallback);
             
-            // Format the final response for Teams
+            // Format the final response for Teams display
             const formattedResponse = this.formatSnowflakeResponse(result);
             
-            // Handle multiple messages vs single message for streaming
+            // Handle responses with separate thinking and analysis components
             if (formattedResponse.hasMultipleMessages) {
                 // Send thinking message as a separate delta if available
                 if (onDelta && formattedResponse.thinkingMessage) {
@@ -429,8 +464,17 @@ class TeamsSnowflakeBot extends ActivityHandler {
 
 
 
+    /**
+     * Sanitize user input to prevent injection attacks
+     * 
+     * Removes potentially dangerous SQL syntax while preserving the natural language intent.
+     * This is a security measure to prevent malicious SQL injection attempts.
+     * 
+     * @param {string} query - Raw user input to sanitize
+     * @returns {string} - Cleaned query safe for processing
+     */
     sanitizeQuery(query) {
-        // Check if query is valid
+        // Validate input type and existence
         if (!query || typeof query !== 'string') {
             return '';
         }
@@ -442,14 +486,22 @@ class TeamsSnowflakeBot extends ActivityHandler {
             .replace(/\/\*[\s\S]*?\*\//g, ''); // Remove block comments
     }
 
-
-
+    /**
+     * Format Snowflake Cortex Agents response for Teams display
+     * 
+     * Handles both single responses and multi-message responses with separate
+     * thinking and analysis components. This method determines the response
+     * structure and delegates to appropriate formatting functions.
+     * 
+     * @param {Object|string} result - Raw response from Snowflake Cortex Agents
+     * @returns {Object|string} - Formatted response ready for Teams display
+     */
     formatSnowflakeResponse(result) {
         if (!result) {
             return "I wasn't able to find relevant information for your query. Please try rephrasing your question or ask about something more specific.";
         }
 
-        // Handle new structure with separate message groups
+        // Handle new structure with separate message groups (thinking + analysis)
         if (result.hasMultipleMessages && result.mainMessage && result.thinkingMessage) {
             return {
                 mainMessage: this.formatSingleResponse(result.mainMessage, false),
@@ -462,12 +514,22 @@ class TeamsSnowflakeBot extends ActivityHandler {
         return this.formatSingleResponse(result);
     }
 
+    /**
+     * Format a single response component with appropriate styling
+     * 
+     * Handles the formatting of individual response components, with different
+     * treatment for "thinking" messages (agent reasoning) vs main analysis responses.
+     * 
+     * @param {Object|string} result - Single response component to format
+     * @param {boolean} isThinking - Whether this is agent reasoning content
+     * @returns {string} - Formatted response text
+     */
     formatSingleResponse(result, isThinking = false) {
         if (!result) {
             return "I wasn't able to find relevant information for your query. Please try rephrasing your question or ask about something more specific.";
         }
 
-        // For thinking messages, don't add headers and just return the content
+        // For thinking messages, return raw content without additional formatting
         if (isThinking) {
             if (result.summary) {
                 return result.summary;
@@ -545,6 +607,14 @@ class TeamsSnowflakeBot extends ActivityHandler {
         return response;
     }
 
+    /**
+     * Get a random acknowledgment message for immediate user feedback
+     * 
+     * Provides immediate confirmation that the bot received and is processing
+     * the user's request. Uses randomization to make interactions feel more natural.
+     * 
+     * @returns {string} - Random acknowledgment message
+     */
     getAcknowledgmentMessage() {
         const messages = [
             "🔍 Working on it...",
@@ -563,8 +633,18 @@ class TeamsSnowflakeBot extends ActivityHandler {
         return messages[Math.floor(Math.random() * messages.length)];
     }
 
+    /**
+     * Detect if the bot is running in Bot Framework Emulator
+     * 
+     * The emulator has different capabilities than production channels,
+     * particularly around Adaptive Card updates. This detection allows
+     * the bot to adapt its behavior accordingly.
+     * 
+     * @param {Object} context - Bot Framework context
+     * @returns {boolean} - True if running in emulator
+     */
     isEmulator(context) {
-        // Check if we're running in Bot Framework Emulator
+        // Check multiple indicators of emulator environment
         const channelId = context.activity.channelId;
         const serviceUrl = context.activity.serviceUrl;
         
@@ -573,11 +653,24 @@ class TeamsSnowflakeBot extends ActivityHandler {
                serviceUrl?.includes('127.0.0.1');
     }
 
+    /**
+     * Simple delay utility for timing control
+     * 
+     * Used to prevent message collision and provide better UX timing.
+     * 
+     * @param {number} ms - Milliseconds to delay
+     * @returns {Promise} - Promise that resolves after the delay
+     */
     async delay(ms) {
         return new Promise(resolve => setTimeout(resolve, ms));
     }
 
-    // Adaptive Card Response Methods
+    /**
+     * Send Adaptive Card responses with fallback support
+     * 
+     * Handles different response types and formats them as appropriate Adaptive Cards.
+     * Provides fallback to text responses if card sending fails.
+     */
     async sendAdaptiveCardResponse(context, response) {
         try {
             // Handle different response types
@@ -928,6 +1021,16 @@ class TeamsSnowflakeBot extends ActivityHandler {
         });
     }
 
+    /**
+     * Parse text response to extract SQL queries and other structured content
+     * 
+     * Extracts various sections from Cortex Agents responses including SQL queries,
+     * insights, recommendations, and CSV file paths. Includes debug logging for
+     * SQL query detection and parsing.
+     * 
+     * @param {string} text - Raw text response to parse
+     * @returns {Object} - Parsed sections with SQL, insights, etc.
+     */
     parseTextResponse(text) {
         const sections = {
             summary: '',
@@ -938,13 +1041,37 @@ class TeamsSnowflakeBot extends ActivityHandler {
             csvPath: ''
         };
 
+        // Debug logging for response parsing
+        if (process.env.DEBUG === 'true' || process.env.DEBUG_DELTAS === 'true') {
+            console.log('\n┌─────────────────────────────────────────────────────────────────────┐');
+            console.log('│ 🔍 PARSING CORTEX AGENTS RESPONSE                                   │');
+            console.log('└─────────────────────────────────────────────────────────────────────┘');
+            console.log('📄 Raw response text (first 500 chars):');
+            console.log(text.substring(0, 500) + (text.length > 500 ? '...' : ''));
+            console.log('─────────────────────────────────────────────────────────────────────');
+        }
+
         // Extract summary
         const summaryMatch = text.match(/\*\*Summary:\*\*\s*(.+?)(?=\n\*\*|\n📝|\n💡|\n🎯|$)/s);
         if (summaryMatch) sections.summary = summaryMatch[1].trim();
 
-        // Extract SQL query
+        // Extract SQL query with debug logging
         const sqlMatch = text.match(/```sql\n([\s\S]*?)\n```/);
-        if (sqlMatch) sections.sql = sqlMatch[1].trim();
+        if (sqlMatch) {
+            sections.sql = sqlMatch[1].trim();
+            
+            if (process.env.DEBUG === 'true' || process.env.DEBUG_DELTAS === 'true') {
+                console.log('✅ SQL QUERY DETECTED:');
+                console.log('📝 Extracted SQL:');
+                console.log(sections.sql);
+                console.log('─────────────────────────────────────────────────────────────────────');
+            }
+        } else {
+            if (process.env.DEBUG === 'true' || process.env.DEBUG_DELTAS === 'true') {
+                console.log('ℹ️  No SQL query found in response');
+                console.log('─────────────────────────────────────────────────────────────────────');
+            }
+        }
 
         // Extract insights
         const insightsMatch = text.match(/💡\s*\*\*Insights:\*\*\s*(.+?)(?=\n\*\*|\n🎯|$)/s);
@@ -958,12 +1085,40 @@ class TeamsSnowflakeBot extends ActivityHandler {
         const csvMatch = text.match(/📊\s*\*\*CSV File Created\*\*[\s\S]*?\*\*(.+?)\*\*/);
         if (csvMatch) sections.csvPath = csvMatch[1].trim();
 
+        // Debug logging for parsed sections
+        if (process.env.DEBUG === 'true' || process.env.DEBUG_DELTAS === 'true') {
+            console.log('📊 PARSED SECTIONS:');
+            console.log(`   Summary: ${sections.summary ? 'Found' : 'Not found'}`);
+            console.log(`   SQL Query: ${sections.sql ? 'Found' : 'Not found'}`);
+            console.log(`   Insights: ${sections.insights ? 'Found' : 'Not found'}`);
+            console.log(`   Recommendations: ${sections.recommendations ? 'Found' : 'Not found'}`);
+            console.log(`   CSV Path: ${sections.csvPath ? 'Found' : 'Not found'}`);
+            console.log('─────────────────────────────────────────────────────────────────────\n');
+        }
+
         return sections;
     }
 
-    // Streaming Adaptive Card Methods
+    /**
+     * STREAMING ADAPTIVE CARD METHODS
+     * 
+     * These methods create Adaptive Cards specifically designed for real-time streaming
+     * updates. They support progressive content updates with visual indicators.
+     */
+
+    /**
+     * Create an Adaptive Card for AI agent reasoning (thinking process)
+     * 
+     * This card displays the AI agent's reasoning process in real-time,
+     * showing how the agent thinks through the user's question. Includes
+     * a visual cursor during streaming and changes style when complete.
+     * 
+     * @param {string} thinkingText - The accumulated agent reasoning content
+     * @param {boolean} isComplete - Whether the thinking process is finished
+     * @returns {Object} - Bot Framework Adaptive Card object
+     */
     createStreamingThinkingCard(thinkingText, isComplete = false) {
-        // Add cursor if not complete
+        // Add blinking cursor during streaming, remove when complete
         const displayText = isComplete ? thinkingText : thinkingText + " ▊";
         const status = isComplete ? "Agent Reasoning" : "Agent Reasoning (thinking...)";
         
@@ -974,7 +1129,7 @@ class TeamsSnowflakeBot extends ActivityHandler {
             "body": [
                 {
                     "type": "Container",
-                    "style": isComplete ? "emphasis" : "attention",
+                    "style": isComplete ? "emphasis" : "attention", // Visual state change
                     "items": [
                         {
                             "type": "ColumnSet",
@@ -985,7 +1140,7 @@ class TeamsSnowflakeBot extends ActivityHandler {
                                     "items": [
                                         {
                                             "type": "TextBlock",
-                                            "text": "🤔",
+                                            "text": "🤔", // Thinking emoji icon
                                             "size": "Large",
                                             "spacing": "None"
                                         }
@@ -1013,15 +1168,26 @@ class TeamsSnowflakeBot extends ActivityHandler {
                     "text": displayText,
                     "wrap": true,
                     "spacing": "Medium",
-                    "fontType": "Monospace",
+                    "fontType": "Monospace", // Monospace for better readability
                     "size": "Small"
                 }
             ]
         });
     }
 
+    /**
+     * Create an Adaptive Card for analysis results with streaming support
+     * 
+     * This card displays the main analysis results from the AI agent,
+     * including data insights, recommendations, and formatted responses.
+     * Updates progressively during streaming with visual status indicators.
+     * 
+     * @param {string} analysisText - The accumulated analysis content
+     * @param {boolean} isComplete - Whether the analysis is finished
+     * @returns {Object} - Bot Framework Adaptive Card object
+     */
     createStreamingAnalysisCard(analysisText, isComplete = false) {
-        // Add cursor if not complete
+        // Add streaming cursor, remove when analysis is complete
         const displayText = isComplete ? analysisText : analysisText + " ▊";
         const status = isComplete ? "Analysis Results" : "Analysis in Progress...";
         
@@ -1032,7 +1198,7 @@ class TeamsSnowflakeBot extends ActivityHandler {
             "body": [
                 {
                     "type": "Container",
-                    "style": isComplete ? "emphasis" : "accent",
+                    "style": isComplete ? "emphasis" : "accent", // Different style from thinking
                     "items": [
                         {
                             "type": "ColumnSet",
@@ -1043,7 +1209,7 @@ class TeamsSnowflakeBot extends ActivityHandler {
                                     "items": [
                                         {
                                             "type": "TextBlock",
-                                            "text": "📊",
+                                            "text": "📊", // Analysis chart emoji icon
                                             "size": "Large",
                                             "spacing": "None"
                                         }
@@ -1077,6 +1243,16 @@ class TeamsSnowflakeBot extends ActivityHandler {
         });
     }
 
+    /**
+     * Create a dedicated Adaptive Card for SQL query display
+     * 
+     * This card shows the SQL query generated by Cortex Agents in a clean,
+     * readable format. Appears before the query results to maintain logical flow.
+     * Uses monospace font for proper SQL formatting and syntax readability.
+     * 
+     * @param {string} sql - The SQL query to display
+     * @returns {Object} - Bot Framework Adaptive Card object
+     */
     createSqlQueryCard(sql) {
         return CardFactory.adaptiveCard({
             "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
@@ -1085,7 +1261,7 @@ class TeamsSnowflakeBot extends ActivityHandler {
             "body": [
                 {
                     "type": "Container",
-                    "style": "emphasis",
+                    "style": "emphasis", // Highlighted style for important query info
                     "items": [
                         {
                             "type": "ColumnSet",
@@ -1096,7 +1272,7 @@ class TeamsSnowflakeBot extends ActivityHandler {
                                     "items": [
                                         {
                                             "type": "TextBlock",
-                                            "text": "📝",
+                                            "text": "📝", // Document/query icon
                                             "size": "Large",
                                             "spacing": "None"
                                         }
@@ -1127,7 +1303,7 @@ class TeamsSnowflakeBot extends ActivityHandler {
                             "type": "TextBlock",
                             "text": sql,
                             "wrap": true,
-                            "fontType": "Monospace",
+                            "fontType": "Monospace", // Monospace for SQL syntax
                             "size": "Small",
                             "color": "Dark"
                         }
@@ -1542,6 +1718,14 @@ class TeamsSnowflakeBot extends ActivityHandler {
         return CardFactory.adaptiveCard(card);
     }
 
+    /**
+     * Send typing indicator to show bot is processing
+     * 
+     * Provides immediate visual feedback to users that the bot is working.
+     * Gracefully handles failures since typing indicators are optional.
+     * 
+     * @param {Object} context - Bot Framework context
+     */
     async sendTypingIndicator(context) {
         try {
             await context.sendActivity({

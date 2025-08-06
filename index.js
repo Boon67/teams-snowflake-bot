@@ -1,3 +1,24 @@
+/**
+ * Microsoft Teams Snowflake Cortex Agents Bot - Main Application Entry Point
+ * 
+ * This is the main server application that integrates Microsoft Teams with 
+ * Snowflake Cortex Agents to provide AI-powered data analysis through natural
+ * language queries with real-time streaming responses.
+ * 
+ * Architecture:
+ * - RESTify HTTP server for Bot Framework webhook endpoints
+ * - Bot Framework Adapter for Teams integration
+ * - TeamsSnowflakeBot for message handling and Adaptive Cards
+ * - SnowflakeService for Cortex Agents API and database operations
+ * - Winston Logger for structured logging with rotation
+ * 
+ * Features:
+ * - Real-time streaming responses with progressive Adaptive Cards
+ * - Health check endpoints for monitoring
+ * - Comprehensive error handling and logging
+ * - Environment-based configuration
+ */
+
 const restify = require('restify');
 const { BotFrameworkAdapter, ActivityTypes, TurnContext } = require('botbuilder');
 const { TeamsSnowflakeBot } = require('./src/bot');
@@ -5,32 +26,39 @@ const { SnowflakeService } = require('./src/services/snowflakeService');
 const { Logger } = require('./src/utils/logger');
 require('dotenv').config();
 
-// Initialize logger
+// Initialize centralized logging service
 const logger = new Logger();
 
-// Create HTTP server
+// Create RESTify HTTP server with middleware
 const server = restify.createServer();
-server.use(restify.plugins.bodyParser());
+server.use(restify.plugins.bodyParser()); // Parse JSON request bodies
 
-// Create adapter
+// Create Bot Framework adapter with Teams app credentials
 const adapter = new BotFrameworkAdapter({
     appId: process.env.MICROSOFT_APP_ID,
     appPassword: process.env.MICROSOFT_APP_PASSWORD
 });
 
-// Catch-all for errors
+// Global error handler for all bot interactions
 adapter.onTurnError = async (context, error) => {
     logger.error('Bot encountered an error:', error);
     await context.sendActivity('Sorry, an error occurred while processing your request. Please try again.');
 };
 
-// Initialize Snowflake service
+// Initialize Snowflake service with Cortex Agents integration
 const snowflakeService = new SnowflakeService();
 
-// Create the main bot
+// Create the main bot instance with dependencies
 const bot = new TeamsSnowflakeBot(snowflakeService, logger);
 
-// Listen for incoming requests
+/**
+ * Main webhook endpoint for Bot Framework
+ * 
+ * Handles all incoming activities from Microsoft Teams including:
+ * - User messages and mentions
+ * - Bot installation/uninstallation events
+ * - Member addition/removal events
+ */
 server.post('/api/messages', async (req, res) => {
     await adapter.process(req, res, async (context) => {
         await bot.run(context);
